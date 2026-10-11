@@ -1,0 +1,6 @@
+@tailwind base;@tailwind components;@tailwind utilities;
+html{background:#140B2B;-webkit-tap-highlight-color:transparent}
+body{@apply font-sans text-plum antialiased;overflow-x:hidden}
+@keyframes tw{0%,100%{opacity:.2}50%{opacity:1}}
+.star{animation:tw 3s ease-in-out infinite}
+:focus-visible{outline:3px solid #FF3D81;outline-offset:3px}
