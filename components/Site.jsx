@@ -44,18 +44,103 @@ export default function Site() {
   const [out, setOut] = useState([false, false, false, false, false])
   const [on, setOn] = useState(false), [burst, setBurst] = useState(0), [age, setAge] = useState(0), [mic, setMic] = useState(false), [wish, setWish] = useState(null), [gift, setGift] = useState(false), [gb, setGb] = useState(0)
   const level = useMotionValue(0), hold = useRef(null), acc = useRef(0)
+  const streamRef = useRef(null), audioCtxRef = useRef(null), animFrameRef = useRef(null)
   const [mk, setMk] = useState({ name: '', age: '', from: '', msg: '', wa: '' }), [link, setLink] = useState('')
   useEffect(() => { const q = new URLSearchParams(location.search); setP((p) => ({ name: q.get('name') || p.name, age: +(q.get('age') || p.age), from: q.get('from') || p.from, msg: q.get('msg') || p.msg, wa: (q.get('wa') || p.wa).replace(/\D/g, '') })) }, [])
   const snuff = () => setOut((o) => { const i = o.indexOf(false); if (i < 0) return o; const n = [...o]; n[i] = true; navigator.vibrate?.(10); return n })
-  useEffect(() => { if (out.every(Boolean) && !on) { const t = setTimeout(() => { setOn(true); setBurst((b) => b + 1); jingle(); animate(0, P.age, { duration: 1.6, ease: 'easeOut', onUpdate: (v) => setAge(Math.round(v)) }) }, 800); return () => clearTimeout(t) } }, [out, on, P.age])
+  
+  const stopMic = () => {
+    if (animFrameRef.current) { cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null }
+    if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null }
+    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') { audioCtxRef.current.close().catch(() => {}); audioCtxRef.current = null }
+    setMic(false)
+    level.set(0)
+  }
+
+  useEffect(() => {
+    if (out.every(Boolean) && !on) {
+      stopMic()
+      const t = setTimeout(() => { setOn(true); setBurst((b) => b + 1); jingle(); animate(0, P.age, { duration: 1.6, ease: 'easeOut', onUpdate: (v) => setAge(Math.round(v)) }) }, 800)
+      return () => clearTimeout(t)
+    }
+  }, [out, on, P.age])
+  useEffect(() => { return () => stopMic() }, [])
   useEffect(() => { if (!wish) return; const t = setTimeout(() => setWish(null), 3800); return () => clearTimeout(t) }, [wish])
+
   const startMic = async () => {
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ audio: true }), c = new AudioContext(), an = c.createAnalyser(); an.fftSize = 512; c.createMediaStreamSource(s).connect(an); setMic(true)
-      const d = new Uint8Array(an.fftSize); let last = performance.now()
-      const loop = (t) => { an.getByteTimeDomainData(d); let sum = 0; for (const v of d) sum += ((v - 128) / 128) ** 2; const rms = Math.sqrt(sum / d.length); level.set(Math.min(1, rms * 4)); acc.current = Math.max(0, acc.current + (rms > .09 ? t - last : -(t - last) * .5)); last = t; if (acc.current > 380) { acc.current = 0; snuff() } requestAnimationFrame(loop) }
-      requestAnimationFrame(loop)
-    } catch { setMic(false) }
+      let s
+      try {
+        s = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+        })
+      } catch {
+        s = await navigator.mediaDevices.getUserMedia({ audio: true })
+      }
+      streamRef.current = s
+
+      const AudioCtx = window.AudioContext || window.webkitAudioContext
+      const c = new AudioCtx()
+      audioCtxRef.current = c
+      if (c.state === 'suspended') {
+        await c.resume()
+      }
+
+      const an = c.createAnalyser()
+      an.fftSize = 512
+      an.smoothingTimeConstant = 0.2
+      c.createMediaStreamSource(s).connect(an)
+      setMic(true)
+
+      const timeData = new Uint8Array(an.fftSize)
+      const freqData = new Uint8Array(an.frequencyBinCount)
+      let last = performance.now()
+
+      const loop = (t) => {
+        an.getByteTimeDomainData(timeData)
+        an.getByteFrequencyData(freqData)
+
+        let sum = 0
+        for (let i = 0; i < timeData.length; i++) {
+          const val = (timeData[i] - 128) / 128
+          sum += val * val
+        }
+        const rms = Math.sqrt(sum / timeData.length)
+
+        let lowSum = 0
+        const lowCount = 15
+        for (let i = 1; i <= lowCount; i++) {
+          lowSum += freqData[i]
+        }
+        const lowAvg = lowSum / lowCount
+
+        const blowScore = Math.min(1, Math.max(rms * 14, lowAvg / 70))
+        level.set(blowScore)
+
+        const dt = Math.min(t - last, 100)
+        last = t
+
+        const isBlowing = (lowAvg > 32 && rms > 0.02) || rms > 0.04
+
+        if (isBlowing) {
+          const boost = Math.min(2.2, Math.max(1, blowScore * 1.6))
+          acc.current += dt * boost
+        } else {
+          acc.current = Math.max(0, acc.current - dt * 0.4)
+        }
+
+        if (acc.current > 180) {
+          acc.current = 0
+          snuff()
+        }
+
+        animFrameRef.current = requestAnimationFrame(loop)
+      }
+
+      animFrameRef.current = requestAnimationFrame(loop)
+    } catch {
+      setMic(false)
+    }
   }
   const blowHold = () => { snuff(); hold.current = setInterval(snuff, 450) }
   const blowEnd = () => clearInterval(hold.current)
